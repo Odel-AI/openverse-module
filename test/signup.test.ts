@@ -22,6 +22,7 @@ describe('register-client', () => {
 		expect(JSON.parse(call.body)).toEqual({ email: 'me@example.com', name: 'my-project', description: expect.stringContaining('@Odel/openverse') });
 		expect(body).toMatchObject({ success: true, clientId: 'new-client-id', clientSecret: 'new-client-secret', name: 'my-project' });
 		expect(body.nextSteps.join(' ')).toContain('me@example.com');
+		expect(body.nextSteps.join(' ')).toContain('https://docs.odel.app/docs/installing#changing-credentials-later');
 		expect(z.object(registerClientOutput).parse(result.structuredContent)).toEqual(body);
 	});
 

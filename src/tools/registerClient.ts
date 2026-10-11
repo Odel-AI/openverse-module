@@ -29,6 +29,9 @@ export const registerClientDescription =
 	'and to click the verification link Openverse emails them (until then the client runs on anonymous rate limits). ' +
 	'Not endorsed by Openverse.';
 
+/** Odel's guide to editing an installed module's secrets (its Config tab). */
+export const CONFIGURE_SECRETS_DOCS = 'https://docs.odel.app/docs/installing#changing-credentials-later';
+
 const DEFAULT_DESCRIPTION = 'Searching Openverse for openly licensed audio and images through the Odel module @Odel/openverse (https://odel.app).';
 
 type Args = { email: string; name?: string; description?: string };
@@ -46,7 +49,7 @@ export async function registerClientTool(base: string, args: Args) {
 		...registration,
 		nextSteps: [
 			'Save OPENVERSE_CLIENT_ID and OPENVERSE_CLIENT_SECRET now (e.g. in your Odel vault): Openverse will not show the secret again.',
-			'Add both to this module’s secrets in Odel, then reconnect so the search tools appear.',
+			`Add both to this module’s secrets in Odel, on its Config tab (${CONFIGURE_SECRETS_DOCS}), then reconnect so the search tools appear.`,
 			`Click the verification link Openverse emailed to ${args.email}; until then the client has anonymous rate limits.`,
 			'Run client-status to confirm it shows verified: true.'
 		]
