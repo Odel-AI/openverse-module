@@ -1,11 +1,11 @@
 /**
- * The Openverse client: per-credential token cache, authenticated GETs, and the mapping from
+ * The Openverse client: per-credential token cache, GETs on a key or anonymous, and the mapping from
  * upstream failures to `ModuleError`s. Never puts a token, a secret or a raw upstream body
  * into an error or a log line.
  */
 
 import { ErrorCode, ModuleError } from '@odel/module-sdk';
-import type { OpenverseCredentials } from './config.js';
+import type { KeySource, OpenverseAuth, OpenverseCredentials } from './config.js';
 
 export const DEFAULT_API_BASE = 'https://api.openverse.org/v1';
 export const TIMEOUT_MS = 10_000;
@@ -45,11 +45,20 @@ async function cacheKey(base: string, creds: OpenverseCredentials): Promise<stri
 	return Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
 }
 
-function credentialsRejected(): ModuleError {
+/** The caller's own key is theirs to fix; Odel's shared one is not. */
+function credentialsRejected(source: KeySource): ModuleError {
+	if (source === 'odel') {
+		return ModuleError.apiError('Openverse rejected Odel’s shared key. Run register-client to get a free key of your own.', { keySource: source });
+	}
 	return new ModuleError(ErrorCode.INVALID_SECRET, 'Openverse rejected your OPENVERSE_CLIENT_ID / OPENVERSE_CLIENT_SECRET', {
 		secretNames: ['OPENVERSE_CLIENT_ID', 'OPENVERSE_CLIENT_SECRET']
 	});
 }
+
+const SHARED_ALLOWANCE: Record<Exclude<KeySource, 'yours'>, string> = {
+	odel: 'Odel’s shared key',
+	anonymous: 'anonymous use'
+};
 
 /** `fetch` with the 10 s timeout, mapping transport failures to typed errors. */
 async function send(url: string, init: RequestInit): Promise<Response> {
@@ -75,7 +84,7 @@ async function rejectedFields(res: Response): Promise<string[]> {
 }
 
 /** Map a non-2xx Openverse response (other than auth) to a ModuleError. */
-async function statusError(res: Response, resource?: { type: MediaType; id: string }): Promise<ModuleError> {
+async function statusError(res: Response, resource?: { type: MediaType; id: string }, source?: KeySource): Promise<ModuleError> {
 	const statusCode = res.status;
 	if (statusCode === 400) {
 		const fields = await rejectedFields(res);
@@ -84,14 +93,23 @@ async function statusError(res: Response, resource?: { type: MediaType; id: stri
 	}
 	if (statusCode === 404 && resource) return ModuleError.notFound(resource.type, resource.id);
 	if (statusCode === 429) {
-		const retryAfter = Number(res.headers.get('Retry-After'));
-		return ModuleError.rateLimitError(Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 60);
+		const header = Number(res.headers.get('Retry-After'));
+		const retryAfter = Number.isFinite(header) && header > 0 ? header : 60;
+		if (source && source !== 'yours') {
+			// A shared allowance ran out: the way past it is a key of the caller's own.
+			return new ModuleError(
+				ErrorCode.RATE_LIMIT_EXCEEDED,
+				`Openverse's rate limit for ${SHARED_ALLOWANCE[source]} is reached. Run register-client to get a free key of your own.`,
+				{ retryAfter, keySource: source }
+			);
+		}
+		return ModuleError.rateLimitError(retryAfter);
 	}
 	if (statusCode >= 500) return ModuleError.apiError('Openverse is unavailable', { statusCode });
 	return ModuleError.apiError('Openverse returned an unexpected response', { statusCode });
 }
 
-async function requestToken(base: string, creds: OpenverseCredentials): Promise<CachedToken> {
+async function requestToken(base: string, creds: OpenverseCredentials, source: KeySource): Promise<CachedToken> {
 	const res = await send(`${base}/auth_tokens/token/`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -101,8 +119,8 @@ async function requestToken(base: string, creds: OpenverseCredentials): Promise<
 			client_secret: creds.OPENVERSE_CLIENT_SECRET
 		})
 	});
-	if (res.status === 400 || res.status === 401) throw credentialsRejected();
-	if (!res.ok) throw await statusError(res);
+	if (res.status === 400 || res.status === 401) throw credentialsRejected(source);
+	if (!res.ok) throw await statusError(res, undefined, source);
 	const body = (await res.json().catch(() => null)) as { access_token?: unknown; expires_in?: unknown } | null;
 	if (typeof body?.access_token !== 'string' || typeof body.expires_in !== 'number') {
 		throw ModuleError.apiError('Openverse returned a malformed token response');
@@ -111,7 +129,7 @@ async function requestToken(base: string, creds: OpenverseCredentials): Promise<
 }
 
 /** A token for these credentials: the cached one while fresh, else a new one (shared by concurrent callers). */
-async function getToken(base: string, creds: OpenverseCredentials, forceRefresh = false): Promise<string> {
+async function getToken(base: string, creds: OpenverseCredentials, source: KeySource, forceRefresh = false): Promise<string> {
 	const key = await cacheKey(base, creds);
 	const cached = tokens.get(key);
 	if (cached && !forceRefresh) {
@@ -119,7 +137,7 @@ async function getToken(base: string, creds: OpenverseCredentials, forceRefresh 
 		if (token && token.expiresAt - TOKEN_MARGIN_MS > Date.now()) return token.token;
 	}
 
-	const pending = requestToken(base, creds);
+	const pending = requestToken(base, creds, source);
 	tokens.delete(key);
 	tokens.set(key, pending);
 	if (tokens.size > MAX_CACHED_TOKENS) tokens.delete(tokens.keys().next().value!);
@@ -142,23 +160,27 @@ export interface OpenverseClient {
 	get<T>(path: string, params?: URLSearchParams, resource?: { type: MediaType; id: string }): Promise<T>;
 }
 
-export function createClient(creds: OpenverseCredentials, base = DEFAULT_API_BASE): OpenverseClient {
+/** A client on the caller's key, Odel's shared key, or none (`auth.creds` null: no token at all). */
+export function createClient(auth: OpenverseAuth, base = DEFAULT_API_BASE): OpenverseClient {
 	const apiBase = base.replace(/\/+$/, '');
+	const { source, creds } = auth;
 	return {
 		async get<T>(path: string, params?: URLSearchParams, resource?: { type: MediaType; id: string }): Promise<T> {
 			const url = `${apiBase}${path}${params && [...params].length ? `?${params}` : ''}`;
-			const call = async (token: string) => send(url, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } });
+			const call = async (token?: string) =>
+				send(url, { headers: { Accept: 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) } });
 
-			let res = await call(await getToken(apiBase, creds));
+			let res = await call(creds ? await getToken(apiBase, creds, source) : undefined);
 			if (res.status === 401) {
 				if (await isPaginationDepth401(res)) {
 					throw ModuleError.validationError('That page is deeper than Openverse will serve for this query', { statusCode: 401 });
 				}
+				if (!creds) throw ModuleError.apiError('Openverse refused an anonymous request', { statusCode: 401, keySource: source });
 				// The token may have been revoked or expired early: refresh once, then give up.
-				res = await call(await getToken(apiBase, creds, true));
-				if (res.status === 401) throw credentialsRejected();
+				res = await call(await getToken(apiBase, creds, source, true));
+				if (res.status === 401) throw credentialsRejected(source);
 			}
-			if (!res.ok) throw await statusError(res, resource);
+			if (!res.ok) throw await statusError(res, resource, source);
 			const body = await res.json().catch(() => {
 				throw ModuleError.apiError('Openverse returned a malformed response');
 			});

@@ -6,7 +6,7 @@ An Odel module that searches [Openverse](https://openverse.org) for openly licen
 
 ## Tools
 
-Every tool except `register-client` needs an Openverse client (see [Bring your own Openverse client](#bring-your-own-openverse-client)). On Odel, those tools stay hidden until both secrets are configured.
+Every tool works without setup: searches run on Odel's shared Openverse key unless you add your own (see [Which key a search uses](#which-key-a-search-uses)).
 
 | Tool              | Inputs                                                                                                                                                              | Returns                                                             |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
@@ -14,7 +14,7 @@ Every tool except `register-client` needs an Openverse client (see [Bring your o
 | `search-images`   | `query` · `licence` · `category`? (`photograph` \| `illustration` \| `digitized_artwork`) · `aspectRatio`? (`tall` \| `wide` \| `square`) · `page` · `pageSize`     | the same                                                            |
 | `get-media`       | `type`: `audio` \| `image` · `id` · `related` (default false)                                                                                                       | `item`, and `related[]` (up to 10) when asked                       |
 | `register-client` | `email` · `name`? (unique; random when omitted) · `description`?                                                                                                    | `clientId`, `clientSecret` (shown once), `name`, `nextSteps[]`      |
-| `client-status`   | —                                                                                                                                                                   | `verified`, `rateLimitModel`, `requestsThisMinute`, `requestsToday` |
+| `client-status`   | —                                                                                                                                                                   | `keySource` (`yours` \| `odel` \| `anonymous`), `verified`, `rateLimitModel`, `requestsThisMinute`, `requestsToday` |
 
 Every item carries `url` (the file, on the source's own host), `license`, `licenseUrl`, `attribution` (the credit line to publish, or `null` when none is needed) and `landingUrl`. Audio items add `durationSeconds`; image items add `thumbnailUrl`, `width` and `height`.
 
@@ -22,20 +22,29 @@ Every item carries `url` (the file, on the source's own host), `license`, `licen
 
 **`maxSeconds`** is applied after the fetch, because Openverse only filters by coarse length buckets; a call reads at most 3 upstream pages to fill `pageSize`. Pass `nextPage` back as `page` to continue.
 
-**Errors** come back as an `isError` result whose text is `{ success: false, error, code, metadata? }`, with `code` from the SDK's `ErrorCode`: `2001` a missing secret, `2002` credentials Openverse rejected, `1001` bad input, `3004` not found, `4001` rate limited (`metadata.retryAfter`), `3001` Openverse unavailable, `3002` network, `3003` timeout.
+**Errors** come back as an `isError` result whose text is `{ success: false, error, code, metadata? }`, with `code` from the SDK's `ErrorCode`: `2001` only one of your two secrets set, `2002` your own credentials rejected by Openverse, `1001` bad input, `3004` not found, `4001` rate limited (`metadata.retryAfter`; on the shared key or anonymous use, `metadata.keySource` and a pointer to `register-client`), `3001` Openverse unavailable, `3002` network, `3003` timeout.
 
-## Bring your own Openverse client
+## Which key a search uses
 
-Each user supplies their own Openverse API client as two secrets, so every caller searches on their own rate limit and under their own agreement with Openverse. Both are optional at install, so someone without a client can install first and get one from inside the module:
+1. **Your own Openverse client**, when both of your secrets are set: an allowance to yourself.
+2. **Odel's shared key** otherwise: a verified client Odel registered for this module and holds as Worker secrets. Every Odel user without their own key shares its allowance.
+3. **Anonymous**, when neither is available (a local run without Odel's key, say).
 
-| Secret                    | What                                           |
+| Caller | Requests a minute | Requests a day | Results per page |
+| --- | --- | --- | --- |
+| A verified client (your own, or Odel's shared one) | 100 | 10,000 | up to 20 here |
+| An unverified client, or anonymous (per IP) | 20 | 200 | 20 |
+
+These are Openverse's published defaults, read from its rate-limit headers; Openverse can raise a client's limits on request.
+
+| Secret (optional)         | What                                           |
 | ------------------------- | ---------------------------------------------- |
 | `OPENVERSE_CLIENT_ID`     | Your Openverse client id                       |
 | `OPENVERSE_CLIENT_SECRET` | Your Openverse client secret (shown only once) |
 
-**Getting a client.** A fresh install lists only `register-client`. Ask your assistant to run it with your own email address. It returns the client id and secret (the secret is shown once), so store both in your Odel vault and add them to the module's secrets on its Config tab ([how](https://docs.odel.app/docs/installing#changing-credentials-later)). Then reconnect your MCP client: the search tools and `client-status` appear. Click the link Openverse emails you, and run `client-status` to confirm `verified: true`. Until you verify, the client runs on anonymous rate limits.
+Setting only one of the two is answered `2001`, naming the missing one: add it, or remove both to go back to Odel's key.
 
-**How the tools are hidden.** The module declares the secrets each tool needs with the SDK's `requiresSecrets`. Odel tells the module which secrets you have configured (names only), and a tool whose secrets are missing is left out of `tools/list`; calling it anyway answers `2001` (MISSING_SECRET). Outside Odel (the MCP inspector, `wrangler dev`) no such information is sent, so every tool is listed and a search without credentials answers `2001`, pointing at `register-client`.
+**Getting your own key.** Worth it if you keep hitting the shared limit (a `4001` that points at `register-client`). Ask your assistant to run `register-client` with your own email address; it needs no account. It returns the client id and secret (the secret is shown once), so store both, say in your Odel vault. Click the link Openverse emails you **before** adding them: until you verify, Openverse treats the client as anonymous, which is less than the shared key. Then add both on the module's Config tab ([how](https://docs.odel.app/docs/installing#changing-credentials-later)) and run `client-status` to confirm `keySource: "yours"` and `verified: true`.
 
 **Registering by hand.**
 
@@ -53,11 +62,13 @@ Save `client_id` and `client_secret` from the response — the secret can't be r
 pnpm install
 pnpm test        # vitest, Openverse replaced by a stubbed fetch
 pnpm typecheck
-pnpm dev         # wrangler dev; send secrets in params._meta["app.odel/secrets"]
-                 # and, to see the gating, names in params._meta["app.odel/configured"] on tools/list
+pnpm dev         # wrangler dev; send your own key in params._meta["app.odel/secrets"]
 ```
 
-`OPENVERSE_API_BASE` (a worker variable, default `https://api.openverse.org/v1`) points the module at another Openverse, such as a local stub.
+Worker bindings:
+
+- `ODEL_OPENVERSE_CLIENT_ID` / `ODEL_OPENVERSE_CLIENT_SECRET` (secrets): Odel's shared key. Locally, put them in `.dev.vars` (gitignored); without them local searches go anonymous.
+- `OPENVERSE_API_BASE` (a variable, default `https://api.openverse.org/v1`) points the module at another Openverse, such as a local stub.
 
 ## License
 

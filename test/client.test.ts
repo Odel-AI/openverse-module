@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { callTool, fakeOpenverse, freshSecrets, media, page } from './helpers';
+import { callTool, odelKey, fakeOpenverse, freshSecrets, media, page } from './helpers';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -12,30 +12,85 @@ function expectNoLeak(text: string, secret: string, upstreamBody?: string) {
 	if (upstreamBody) expect(text).not.toContain(upstreamBody);
 }
 
-describe('credentials (bring your own)', () => {
-	test('missing secrets fail with MISSING_SECRET pointing at register-client, and nothing is sent upstream', async () => {
+describe('which key a call uses', () => {
+	test('with no key of their own, a caller searches on Odel’s shared key', async () => {
+		const odel = odelKey();
+		const ov = fakeOpenverse(() => page([media()]));
+		const { isError, body } = await callTool('search-audio', { query: 'pop' }, null, odel);
+
+		expect(isError).toBe(false);
+		expect(body.results).toHaveLength(1);
+		expect(Object.fromEntries(new URLSearchParams(ov.tokenCalls()[0].body))).toMatchObject({
+			client_id: odel.ODEL_OPENVERSE_CLIENT_ID,
+			client_secret: odel.ODEL_OPENVERSE_CLIENT_SECRET
+		});
+		expect(ov.searches()[0].headers.get('authorization')).toBe('Bearer tok-1');
+	});
+
+	test('an Odel caller with nothing configured is not gated: it gets Odel’s shared key', async () => {
 		const ov = fakeOpenverse(() => page([]));
+		const { isError } = await callTool('search-images', { query: 'cat' }, {}, odelKey());
+
+		expect(isError).toBe(false);
+		expect(ov.tokenCalls()).toHaveLength(1);
+	});
+
+	test('the caller’s own key wins over Odel’s', async () => {
+		const secrets = freshSecrets();
+		const ov = fakeOpenverse(() => page([]));
+		await callTool('search-audio', { query: 'pop' }, secrets, odelKey());
+
+		expect(new URLSearchParams(ov.tokenCalls()[0].body).get('client_id')).toBe(secrets.OPENVERSE_CLIENT_ID);
+	});
+
+	test('with no key at all a call goes anonymous: no token, no Authorization header', async () => {
+		const ov = fakeOpenverse(() => page([media()]));
 		const { isError, body } = await callTool('search-audio', { query: 'pop' }, null);
 
-		expect(isError).toBe(true);
-		expect(body).toMatchObject({ success: false, code: 2001, metadata: { secretNames: ['OPENVERSE_CLIENT_ID', 'OPENVERSE_CLIENT_SECRET'] } });
-		expect(body.error).toContain('register-client');
-		expect(ov.calls).toHaveLength(0);
+		expect(isError).toBe(false);
+		expect(body.results).toHaveLength(1);
+		expect(ov.tokenCalls()).toHaveLength(0);
+		expect(ov.searches()[0].headers.get('authorization')).toBeNull();
 	});
 
-	test('an Odel caller without the secrets is refused by the SDK gate before anything is sent', async () => {
+	test('one secret of their own missing names only that one, and nothing is sent', async () => {
 		const ov = fakeOpenverse(() => page([]));
-		const { isError, body } = await callTool('search-audio', { query: 'pop' }, {});
+		const { body } = await callTool('search-audio', { query: 'pop' }, { OPENVERSE_CLIENT_ID: 'only-the-id' }, odelKey());
 
-		expect(isError).toBe(true);
-		expect(body).toMatchObject({ code: 2001, metadata: { secretNames: ['OPENVERSE_CLIENT_ID', 'OPENVERSE_CLIENT_SECRET'] } });
+		expect(body).toMatchObject({ code: 2001, metadata: { secretNames: ['OPENVERSE_CLIENT_SECRET'] } });
+		expect(body.error).toContain('remove both');
 		expect(ov.calls).toHaveLength(0);
 	});
 
-	test('one secret missing names only that one', async () => {
-		fakeOpenverse(() => page([]));
-		const { body } = await callTool('search-audio', { query: 'pop' }, { OPENVERSE_CLIENT_ID: 'only-the-id' });
-		expect(body).toMatchObject({ code: 2001, metadata: { secretNames: ['OPENVERSE_CLIENT_SECRET'] } });
+	test('Odel’s key being rejected is Odel’s problem, not an invalid secret of the caller’s', async () => {
+		const odel = odelKey();
+		fakeOpenverse(
+			() => page([]),
+			() => Response.json({ error: 'invalid_client' }, { status: 401 })
+		);
+		const { body, text } = await callTool('search-audio', { query: 'pop' }, null, odel);
+
+		expect(body).toMatchObject({ code: 3001, metadata: { keySource: 'odel' } });
+		expect(body.error).toContain('register-client');
+		expectNoLeak(text, odel.ODEL_OPENVERSE_CLIENT_SECRET!);
+		expect(text).not.toContain(odel.ODEL_OPENVERSE_CLIENT_ID!);
+	});
+
+	test.each([
+		['Odel’s shared key', 'odel', () => odelKey()],
+		['anonymous use', 'anonymous', () => ({})]
+	])('a 429 on %s points at register-client', async (_name, keySource, env) => {
+		fakeOpenverse(() => new Response('', { status: 429, headers: { 'Retry-After': '12' } }));
+		const { body } = await callTool('search-audio', { query: 'pop' }, null, env());
+
+		expect(body).toMatchObject({ code: 4001, metadata: { retryAfter: 12, keySource } });
+		expect(body.error).toContain('register-client');
+	});
+
+	test('an anonymous 401 that is not about pagination is an API error, not a credentials one', async () => {
+		fakeOpenverse(() => Response.json({ detail: 'Authentication credentials were not provided.' }, { status: 401 }));
+		const { body } = await callTool('search-audio', { query: 'pop' }, null);
+		expect(body).toMatchObject({ code: 3001, metadata: { keySource: 'anonymous' } });
 	});
 
 	test('the token request is form-encoded client_credentials with the caller’s own client', async () => {

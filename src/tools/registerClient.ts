@@ -22,12 +22,11 @@ export const registerClientOutput = {
 };
 
 export const registerClientDescription =
-	'Register a new Openverse API client for the user. Once its id and secret are configured, this module adds tools to search ' +
-	'openly licensed sound effects, music and images that are safe for commercial use. Needs no credentials. ' +
-	'Only call it when the user asks for a client and gives their own email address. ' +
-	'The secret is returned once: tell the user to store both values as this module’s OPENVERSE_CLIENT_ID and OPENVERSE_CLIENT_SECRET in Odel, ' +
-	'and to click the verification link Openverse emails them (until then the client runs on anonymous rate limits). ' +
-	'Not endorsed by Openverse.';
+	'Register the user’s own free Openverse API client. Only needed if they keep hitting rate limits: without one, this module ' +
+	'searches with Odel’s shared key, whose allowance (100 requests a minute, 10,000 a day) every Odel user shares; a verified key of ' +
+	'their own gets the same allowance to themselves. Needs no credentials. Only call it when the user asks for a client and gives ' +
+	'their own email address. The secret is returned once: tell the user to store both values, verify the client from the email ' +
+	'Openverse sends, and then add them as this module’s OPENVERSE_CLIENT_ID and OPENVERSE_CLIENT_SECRET in Odel. Not endorsed by Openverse.';
 
 /** Odel's guide to editing an installed module's secrets (its Config tab). */
 export const CONFIGURE_SECRETS_DOCS = 'https://docs.odel.app/docs/installing#changing-credentials-later';
@@ -49,9 +48,9 @@ export async function registerClientTool(base: string, args: Args) {
 		...registration,
 		nextSteps: [
 			'Save OPENVERSE_CLIENT_ID and OPENVERSE_CLIENT_SECRET now (e.g. in your Odel vault): Openverse will not show the secret again.',
-			`Add both to this module’s secrets in Odel, on its Config tab (${CONFIGURE_SECRETS_DOCS}), then reconnect so the search tools appear.`,
-			`Click the verification link Openverse emailed to ${args.email}; until then the client has anonymous rate limits.`,
-			'Run client-status to confirm it shows verified: true.'
+			`Click the verification link Openverse emailed to ${args.email}. Until then Openverse treats the client as anonymous (20 requests a minute, 200 a day), which is less than Odel’s shared key.`,
+			`Once verified, add both to this module’s secrets in Odel, on its Config tab (${CONFIGURE_SECRETS_DOCS}). Searches use Odel’s shared key until then.`,
+			'Run client-status to confirm it shows keySource: yours and verified: true.'
 		]
 	};
 }

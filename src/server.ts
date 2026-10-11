@@ -1,8 +1,8 @@
-/** The MCP server: search tools over a per-caller Openverse client, plus the tools to get one. */
+/** The MCP server: search tools on the caller's Openverse key or Odel's shared one, plus the tools to get and check a key. */
 
 import { createOdelServer } from '@odel/module-sdk/server';
 import type { HandlerExtraLike } from '@odel/module-sdk';
-import { configSchema, requireCredentials, type Env } from './config.js';
+import { configSchema, resolveAuth, type Env } from './config.js';
 import { createClient, DEFAULT_API_BASE } from './openverse.js';
 import { run } from './tools/shared.js';
 import { searchAudio, searchAudioDescription, searchAudioInput, searchAudioOutput } from './tools/searchAudio.js';
@@ -11,31 +11,28 @@ import { getMedia, getMediaDescription, getMediaInput, getMediaOutput } from './
 import { registerClientTool, registerClientDescription, registerClientInput, registerClientOutput } from './tools/registerClient.js';
 import { clientStatus, clientStatusDescription, clientStatusOutput } from './tools/clientStatus.js';
 
-const VERSION = '1.0.0';
-
-/** The search tools and client-status stay hidden from an Odel caller until both are configured. */
-const CREDENTIALS = ['OPENVERSE_CLIENT_ID', 'OPENVERSE_CLIENT_SECRET'];
+const VERSION = '1.1.0';
 
 export function buildServer(env: Env = {}) {
 	const server = createOdelServer({ name: 'openverse', version: VERSION, configSchema });
 	const base = env.OPENVERSE_API_BASE || DEFAULT_API_BASE;
-	const clientFor = (extra: HandlerExtraLike) => createClient(requireCredentials(extra), base);
+	const clientFor = (extra: HandlerExtraLike) => createClient(resolveAuth(extra, env), base);
 
 	server.registerTool(
 		'search-audio',
-		{ description: searchAudioDescription, inputSchema: searchAudioInput, outputSchema: searchAudioOutput, requiresSecrets: CREDENTIALS },
+		{ description: searchAudioDescription, inputSchema: searchAudioInput, outputSchema: searchAudioOutput },
 		async (args, extra) => run(() => searchAudio(clientFor(extra), args))
 	);
 
 	server.registerTool(
 		'search-images',
-		{ description: searchImagesDescription, inputSchema: searchImagesInput, outputSchema: searchImagesOutput, requiresSecrets: CREDENTIALS },
+		{ description: searchImagesDescription, inputSchema: searchImagesInput, outputSchema: searchImagesOutput },
 		async (args, extra) => run(() => searchImages(clientFor(extra), args))
 	);
 
 	server.registerTool(
 		'get-media',
-		{ description: getMediaDescription, inputSchema: getMediaInput, outputSchema: getMediaOutput, requiresSecrets: CREDENTIALS },
+		{ description: getMediaDescription, inputSchema: getMediaInput, outputSchema: getMediaOutput },
 		async (args, extra) => run(() => getMedia(clientFor(extra), args))
 	);
 
@@ -56,10 +53,13 @@ export function buildServer(env: Env = {}) {
 			description: clientStatusDescription,
 			inputSchema: {},
 			outputSchema: clientStatusOutput,
-			annotations: { readOnlyHint: true },
-			requiresSecrets: CREDENTIALS
+			annotations: { readOnlyHint: true }
 		},
-		async (_args, extra) => run(() => clientStatus(clientFor(extra)))
+		async (_args, extra) =>
+			run(() => {
+				const auth = resolveAuth(extra, env);
+				return clientStatus(createClient(auth, base), auth.source);
+			})
 	);
 
 	return server;

@@ -22,17 +22,6 @@ test('odel://config declares the caller’s own Openverse client, optional at in
 
 const names = (tools: Array<{ name: string }>) => tools.map(t => t.name).sort();
 
-test('an Odel caller with no Openverse client sees only register-client', async () => {
-	expect(names(await listTools({ 'app.odel/configured': [] }))).toEqual(['register-client']);
-	expect(names(await listTools({ 'app.odel/configured': ['OPENVERSE_CLIENT_ID'] }))).toEqual(['register-client']);
-});
-
-test('once both secrets are configured every tool is listed', async () => {
-	expect(names(await listTools({ 'app.odel/configured': ['OPENVERSE_CLIENT_ID', 'OPENVERSE_CLIENT_SECRET'] }))).toEqual([
-		'client-status',
-		'get-media',
-		'register-client',
-		'search-audio',
-		'search-images'
-	]);
+test('nothing is gated: an Odel caller with no key of their own sees every tool', async () => {
+	expect(names(await listTools({ 'app.odel/configured': [] }))).toEqual(['client-status', 'get-media', 'register-client', 'search-audio', 'search-images']);
 });

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import { z } from 'zod';
 import { registerClientOutput } from '../src/tools/registerClient';
 import { clientStatusOutput } from '../src/tools/clientStatus';
-import { callTool, fakeOpenverse, freshSecrets } from './helpers';
+import { callTool, fakeOpenverse, freshSecrets, odelKey } from './helpers';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -70,23 +70,31 @@ describe('register-client', () => {
 });
 
 describe('client-status', () => {
-	test('reports verification and usage from /rate_limit/ with the caller’s token', async () => {
+	test('with the caller’s own key it reports keySource yours, verification and usage from /rate_limit/', async () => {
 		const ov = fakeOpenverse(() =>
 			Response.json({ requests_this_minute: 2, requests_today: 40, rate_limit_model: 'standard', verified: true })
 		);
-		const { isError, body, result } = await callTool('client-status', {}, freshSecrets());
+		const { isError, body, result } = await callTool('client-status', {}, freshSecrets(), odelKey());
 
 		expect(isError).toBe(false);
 		expect(ov.searches()[0].url.pathname).toBe('/v1/rate_limit/');
 		expect(ov.searches()[0].headers.get('authorization')).toBe('Bearer tok-1');
-		expect(body).toEqual({ success: true, verified: true, rateLimitModel: 'standard', requestsThisMinute: 2, requestsToday: 40 });
+		expect(body).toEqual({ success: true, keySource: 'yours', verified: true, rateLimitModel: 'standard', requestsThisMinute: 2, requestsToday: 40 });
 		expect(z.object(clientStatusOutput).parse(result.structuredContent)).toEqual(body);
 	});
 
-	test('without a client it fails with MISSING_SECRET pointing at register-client', async () => {
-		fakeOpenverse(() => Response.json({}));
+	test('without a key of their own it reports Odel’s shared key', async () => {
+		fakeOpenverse(() => Response.json({ requests_this_minute: null, requests_today: null, rate_limit_model: 'standard', verified: true }));
+		const { body } = await callTool('client-status', {}, null, odelKey());
+		expect(body).toMatchObject({ success: true, keySource: 'odel', verified: true });
+	});
+
+	test('with no key at all it reports anonymous without calling Openverse', async () => {
+		const ov = fakeOpenverse(() => Response.json({}));
 		const { body } = await callTool('client-status', {}, null);
-		expect(body.code).toBe(2001);
-		expect(body.error).toContain('register-client');
+
+		expect(body).toEqual({ success: true, keySource: 'anonymous', verified: null, rateLimitModel: null, requestsThisMinute: null, requestsToday: null });
+		expect(ov.calls).toHaveLength(0);
 	});
 });
+

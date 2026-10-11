@@ -1,5 +1,6 @@
 import { vi } from 'vitest';
 import worker from '../src/index';
+import type { Env } from '../src/config';
 
 export const BASE = 'https://openverse.test/v1';
 
@@ -94,11 +95,18 @@ export async function readConfigResource(): Promise<any> {
 	return JSON.parse(out.result.contents[0].text);
 }
 
-/** Call a tool as mcp-proxy would, secrets in `_meta`. Returns the raw result plus its parsed text. */
-export async function callTool(name: string, args: Record<string, unknown>, secrets: Record<string, string> | null = freshSecrets()) {
+let k = 0;
+/** A fresh Odel shared key (the Worker secrets), so the token cache never leaks between tests. */
+export function odelKey(): Env {
+	k++;
+	return { ODEL_OPENVERSE_CLIENT_ID: `odel-client-${k}`, ODEL_OPENVERSE_CLIENT_SECRET: `odel-secret-${k}-s3cr3t` };
+}
+
+/** Call a tool as mcp-proxy would, secrets in `_meta`; `env` adds Worker bindings. Returns the raw result plus its parsed text. */
+export async function callTool(name: string, args: Record<string, unknown>, secrets: Record<string, string> | null = freshSecrets(), env: Env = {}) {
 	const params: Record<string, unknown> = { name, arguments: args };
 	if (secrets) params._meta = { 'app.odel/secrets': secrets };
-	const out = await parse(await worker.fetch(rpc('tools/call', params), { OPENVERSE_API_BASE: BASE }));
+	const out = await parse(await worker.fetch(rpc('tools/call', params), { OPENVERSE_API_BASE: BASE, ...env }));
 	if (out.error) return { rpcError: out.error, isError: true, text: '', body: undefined as any, result: undefined as any };
 	const text: string = out.result.content[0].text;
 	let body: any;
