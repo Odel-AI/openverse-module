@@ -132,7 +132,17 @@ describe('credentials (bring your own)', () => {
 
 describe('upstream errors', () => {
 	const cases: Array<[string, () => Response | Promise<Response>, Record<string, unknown>]> = [
-		['400', () => new Response('{"detail":"Invalid page"}', { status: 400 }), { code: 1001, metadata: { statusCode: 400 } }],
+		['400', () => new Response('{"detail":"Invalid page"}', { status: 400 }), { code: 1001, metadata: { statusCode: 400, fields: [] } }],
+		[
+			'400 naming fields, as Openverse sends it',
+			() => Response.json({ detail: { license: ["License 'foo' does not exist."] } }, { status: 400 }),
+			{ code: 1001, error: 'Openverse rejected the request parameters: license', metadata: { statusCode: 400, fields: ['license'] } }
+		],
+		[
+			'a Cloudflare challenge (429, HTML, no Retry-After)',
+			() => new Response('<!DOCTYPE html><title>Just a moment...</title>', { status: 429, headers: { 'Content-Type': 'text/html' } }),
+			{ code: 4001, metadata: { retryAfter: 60 } }
+		],
 		['429 with Retry-After', () => new Response('slow down', { status: 429, headers: { 'Retry-After': '17' } }), { code: 4001, metadata: { retryAfter: 17 } }],
 		['429 without Retry-After', () => new Response('slow down', { status: 429 }), { code: 4001, metadata: { retryAfter: 60 } }],
 		['503', () => new Response('<html>upstream down</html>', { status: 503 }), { code: 3001, error: 'Openverse is unavailable', metadata: { statusCode: 503 } }],
@@ -149,7 +159,7 @@ describe('upstream errors', () => {
 		expect(isError).toBe(true);
 		expect(body).toMatchObject({ success: false, ...expected });
 		expectNoLeak(text, secrets.OPENVERSE_CLIENT_SECRET);
-		for (const raw of ['Invalid page', 'slow down', 'upstream down', 'ECONNREFUSED', 'not json']) expect(text).not.toContain(raw);
+		for (const raw of ['Invalid page', 'does not exist', 'Just a moment', 'slow down', 'upstream down', 'ECONNREFUSED', 'not json']) expect(text).not.toContain(raw);
 	});
 
 	test('the token endpoint being down maps to API_ERROR, not a credentials error', async () => {

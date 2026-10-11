@@ -63,10 +63,25 @@ async function send(url: string, init: RequestInit): Promise<Response> {
 	}
 }
 
+/**
+ * The fields a 400 objects to, never the messages (they echo the input back). Openverse sends
+ * DRF's `{ field: [messages] }` at the top level on register and nested in `detail` on search.
+ */
+async function rejectedFields(res: Response): Promise<string[]> {
+	const body = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+	const errors = body?.detail && typeof body.detail === 'object' && !Array.isArray(body.detail) ? body.detail : body;
+	if (!errors || typeof errors !== 'object' || Array.isArray(errors)) return [];
+	return Object.keys(errors).filter(key => key !== 'detail');
+}
+
 /** Map a non-2xx Openverse response (other than auth) to a ModuleError. */
-function statusError(res: Response, resource?: { type: MediaType; id: string }): ModuleError {
+async function statusError(res: Response, resource?: { type: MediaType; id: string }): Promise<ModuleError> {
 	const statusCode = res.status;
-	if (statusCode === 400) return ModuleError.validationError('Openverse rejected the request parameters', { statusCode });
+	if (statusCode === 400) {
+		const fields = await rejectedFields(res);
+		const named = fields.length ? `: ${fields.join(', ')}` : '';
+		return ModuleError.validationError(`Openverse rejected the request parameters${named}`, { statusCode, fields });
+	}
 	if (statusCode === 404 && resource) return ModuleError.notFound(resource.type, resource.id);
 	if (statusCode === 429) {
 		const retryAfter = Number(res.headers.get('Retry-After'));
@@ -87,7 +102,7 @@ async function requestToken(base: string, creds: OpenverseCredentials): Promise<
 		})
 	});
 	if (res.status === 400 || res.status === 401) throw credentialsRejected();
-	if (!res.ok) throw statusError(res);
+	if (!res.ok) throw await statusError(res);
 	const body = (await res.json().catch(() => null)) as { access_token?: unknown; expires_in?: unknown } | null;
 	if (typeof body?.access_token !== 'string' || typeof body.expires_in !== 'number') {
 		throw ModuleError.apiError('Openverse returned a malformed token response');
@@ -143,7 +158,7 @@ export function createClient(creds: OpenverseCredentials, base = DEFAULT_API_BAS
 				res = await call(await getToken(apiBase, creds, true));
 				if (res.status === 401) throw credentialsRejected();
 			}
-			if (!res.ok) throw statusError(res, resource);
+			if (!res.ok) throw await statusError(res, resource);
 			const body = await res.json().catch(() => {
 				throw ModuleError.apiError('Openverse returned a malformed response');
 			});
@@ -169,15 +184,13 @@ export async function registerClient(
 		body: JSON.stringify(input)
 	});
 	if (res.status === 400) {
-		// Name only the fields Openverse objected to; its messages echo the input back.
-		const body = (await res.json().catch(() => null)) as { detail?: unknown } | null;
-		const fields = body?.detail && typeof body.detail === 'object' ? Object.keys(body.detail) : [];
+		const fields = await rejectedFields(res);
 		const message = fields.includes('name')
 			? 'Openverse rejected the client name; names must be unique, so try another'
 			: 'Openverse rejected the registration';
 		throw ModuleError.validationError(message, { statusCode: 400, fields });
 	}
-	if (!res.ok) throw statusError(res);
+	if (!res.ok) throw await statusError(res);
 	const body = (await res.json().catch(() => null)) as { client_id?: unknown; client_secret?: unknown; name?: unknown } | null;
 	if (typeof body?.client_id !== 'string' || typeof body.client_secret !== 'string') {
 		throw ModuleError.apiError('Openverse returned a malformed registration response');

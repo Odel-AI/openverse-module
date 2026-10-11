@@ -34,13 +34,25 @@ describe('register-client', () => {
 	});
 
 	test('a taken name is a validation error naming the field, without echoing Openverse’s body', async () => {
-		fakeOpenverse(() => Response.json({ detail: { name: ['application with this name already exists for me@example.com.'] } }, { status: 400 }));
+		fakeOpenverse(() => Response.json({ name: ['o auth2 registration with this name already exists.'] }, { status: 400 }));
 		const { isError, body, text } = await callTool('register-client', { email: 'me@example.com', name: 'taken' }, null);
 
 		expect(isError).toBe(true);
 		expect(body).toMatchObject({ code: 1001, metadata: { statusCode: 400, fields: ['name'] } });
 		expect(body.error).toContain('unique');
 		expect(text).not.toContain('already exists');
+	});
+
+	test('a 400 with its fields nested in detail still names them', async () => {
+		fakeOpenverse(() => Response.json({ detail: { email: ['Enter a valid email address.'] } }, { status: 400 }));
+		const { body } = await callTool('register-client', { email: 'me@example.com' }, null);
+		expect(body).toMatchObject({ code: 1001, metadata: { fields: ['email'] } });
+	});
+
+	test('a 400 that names no field says so generically', async () => {
+		fakeOpenverse(() => Response.json({ detail: 'Bad request' }, { status: 400 }));
+		const { body } = await callTool('register-client', { email: 'me@example.com' }, null);
+		expect(body).toMatchObject({ code: 1001, error: 'Openverse rejected the registration', metadata: { fields: [] } });
 	});
 
 	test('a 429 maps to RATE_LIMIT_EXCEEDED', async () => {
