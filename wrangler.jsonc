@@ -1,0 +1,8 @@
+// Local `wrangler dev` only — Odel builds and deploys from src/index.ts and doesn't read this.
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "openverse",
+	"main": "src/index.ts",
+	"compatibility_date": "2025-06-01",
+	"compatibility_flags": ["nodejs_compat"]
+}
